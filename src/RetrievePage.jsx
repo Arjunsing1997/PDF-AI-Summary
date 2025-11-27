@@ -1,152 +1,383 @@
 import React, { useEffect, useState } from "react";
 
-export default function RetrievePage() {
-  const [query, setQuery] = useState("");
-  const [docs, setDocs] = useState([]);
-  const [filtered, setFiltered] = useState([]);
-  const [showPassword, setShowPassword] = useState(false);
-  const [selectedDoc, setSelectedDoc] = useState(null);
-  const [otp, setOtp] = useState("");
+const BACKEND_URL = "http://localhost:5000";
 
-  // --------------------------------------------------------
-  //  LOAD FILES FROM BACKEND  →  /api/pdf/list
-  // --------------------------------------------------------
+export default function RetrievePage({ userEmail }) {
+
+  const [downloadDoc, setDownloadDoc] = useState(null);         // doc selected for download
+  const [downloadPassword, setDownloadPassword] = useState("");
+  const [downloadLoading, setDownloadLoading] = useState(false);
+
+
+  const [documents, setDocuments] = useState([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [summaryLoadingId, setSummaryLoadingId] = useState(null);
+  const [summaryDoc, setSummaryDoc] = useState(null); // { id, name, summary }
+  const [emailSendingId, setEmailSendingId] = useState(null);
+
+  const token = localStorage.getItem("token");
+
+  // -----------------------------
+  // FETCH DOCUMENTS (OPTIONALLY WITH SEARCH)
+  // -----------------------------
+  const fetchDocuments = async (query = "") => {
+    try {
+      setLoadingDocs(true);
+      let url = `${BACKEND_URL}/api/pdf/list`;
+      if (query.trim()) {
+        url += `?q=${encodeURIComponent(query.trim())}`;
+      }
+
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const data = await res.json();
+      console.log("Log List ", data.documents)
+      if (!res.ok) throw new Error(data.message || "Failed to fetch documents");
+
+      setDocuments(data.documents || []);
+    } catch (err) {
+      console.error("fetchDocuments error:", err);
+      alert("Failed to retrieve documents: " + err.message);
+    } finally {
+      setLoadingDocs(false);
+    }
+  };
+
   useEffect(() => {
-    fetch("http://localhost:5000/api/pdf/list", {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("token")}`,
-      },
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        console.log("RETRIEVE FILES:", data);
+    if (!token) return;
+    fetchDocuments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
-        if (data.documents) {
-          setDocs(data.documents);
-          setFiltered(data.documents);
-        }
-      })
-      .catch((err) => console.error("Error fetching documents:", err));
-  }, []);
-
-  // --------------------------------------------------------
-  //  SEARCH DOCUMENTS BY NAME
-  // --------------------------------------------------------
-  const handleSearch = (e) => {
+  const onSearchSubmit = (e) => {
     e.preventDefault();
+    fetchDocuments(searchTerm);
+  };
 
-    if (!query.trim()) {
-      setFiltered(docs);
+  const clearSearch = () => {
+    setSearchTerm("");
+    fetchDocuments("");
+  };
+
+  // -----------------------------
+  // DOWNLOAD (simple: open S3/local URL)
+  // -----------------------------
+  // const handleDownload = (doc) => {
+  //   if (!doc.path) {
+  //     alert("No file path available for this document.");
+  //     return;
+  //   }
+  //   // For a more secure flow, you would call a /download endpoint,
+  //   // but for now this opens the stored URL or local path.
+  //   window.open(doc.path, "_blank");
+  // };
+
+  const handleDownload = (doc) => {
+  // If not encrypted, you *could* still go through backend, but for now:
+  if (!doc.encrypted) {
+    // Option A: direct open (simpler)
+    if (!doc.path) {
+      alert("No file path available for this document.");
       return;
     }
+    window.open(doc.path, "_blank");
+    return;
 
-    const q = query.toLowerCase();
-    const results = docs.filter((d) =>
-      d.fileName.toLowerCase().includes(q)
+    // Option B (more secure): always go via backend without password
+    // setDownloadDoc(doc); // and handle it in the same modal with optional password
+  }
+
+  // For encrypted docs: open password modal
+  setDownloadDoc(doc);
+  setDownloadPassword("");
+};
+
+
+const confirmDownload = async () => {
+  if (!downloadDoc) return;
+
+  try {
+    setDownloadLoading(true);
+
+    const res = await fetch(
+      `${BACKEND_URL}/api/pdf/${downloadDoc._id}/download`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          password: downloadPassword,
+        }),
+      }
     );
 
-    setFiltered(results);
-  };
-
-  // --------------------------------------------------------
-  //  OPEN PASSWORD POPUP
-  // --------------------------------------------------------
-  const attemptDownload = (doc) => {
-    setSelectedDoc(doc);
-    setOtp("");
-    setShowPassword(true);
-  };
-
-  // --------------------------------------------------------
-  //  VERIFY OTP + DOWNLOAD
-  // --------------------------------------------------------
-  const confirmDownload = () => {
-    if (!otp.trim()) {
-      alert("Enter OTP before downloading");
-      return;
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || "Download failed");
     }
 
-    setShowPassword(false);
+    // Get PDF blob from response
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
 
-    if (!selectedDoc) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = downloadDoc.fileName || "document.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
 
-    // S3 URL → open directly
-    if (selectedDoc.path.includes("s3.amazonaws.com")) {
-      window.open(selectedDoc.path, "_blank");
-    } else {
-      // Local file
-      window.location.href = `http://localhost:5000/api/files/download/${selectedDoc._id}`;
+    // Close modal
+    setDownloadDoc(null);
+    setDownloadPassword("");
+  } catch (err) {
+    console.error("confirmDownload error:", err);
+    alert("Failed to download: " + err.message);
+  } finally {
+    setDownloadLoading(false);
+  }
+};
+
+
+  // -----------------------------
+  // SUMMARIZE DOC (SHOW PANEL)
+  // -----------------------------
+  const handleSummarize = async (doc) => {
+    try {
+      setSummaryLoadingId(doc._id);
+      setSummaryDoc(null);
+
+      const res = await fetch(
+        `${BACKEND_URL}/api/pdf/${doc._id}/summary`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || "Failed to get summary");
+      }
+
+      setSummaryDoc({
+        id: doc._id,
+        name: doc.fileName,
+        summary: data.summary || "(No summary generated)",
+      });
+    } catch (err) {
+      console.error("handleSummarize error:", err);
+      alert("Failed to summarize: " + err.message);
+    } finally {
+      setSummaryLoadingId(null);
+    }
+  };
+
+  // -----------------------------
+  // EMAIL DOC
+  // -----------------------------
+  const handleEmail = async (doc) => {
+    try {
+      setEmailSendingId(doc._id);
+      const res = await fetch(
+        `${BACKEND_URL}/api/pdf/${doc._id}/email`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || "Failed to send email");
+      }
+
+      alert(
+        `Email sent for "${doc.fileName}" to your registered email address.`
+      );
+    } catch (err) {
+      console.error("handleEmail error:", err);
+      alert("Failed to email document: " + err.message);
+    } finally {
+      setEmailSendingId(null);
     }
   };
 
   return (
-    <div className="retrieve-page">
-      <h3>Retrieve Documents</h3>
+
+    
+    <div className="documents-page">
+
+      {/* Download password modal */}
+{downloadDoc && (
+  <div className="password-modal">
+    <div className="password-box">
+      <h3>Enter password to download</h3>
+      <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+        Document: <strong>{downloadDoc.fileName}</strong>
+      </p>
+      <input
+        type="password"
+        value={downloadPassword}
+        onChange={(e) => setDownloadPassword(e.target.value)}
+        placeholder="Enter the same password used during upload"
+      />
+      <div className="modal-actions">
+        <button
+          className="modal-cancel"
+          onClick={() => {
+            setDownloadDoc(null);
+            setDownloadPassword("");
+          }}
+          disabled={downloadLoading}
+        >
+          Cancel
+        </button>
+        <button
+          className="modal-confirm"
+          onClick={confirmDownload}
+          disabled={downloadLoading || !downloadPassword.trim()}
+        >
+          {downloadLoading ? "Decrypting..." : "Download"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+
+      {/* Header */}
+      <div className="upload-header">
+        <div>
+          <h2 className="upload-title">My Documents</h2>
+          <p className="upload-subtitle">
+            View, search, download, summarize, and email your uploaded documents.
+          </p>
+        </div>
+        <div className="upload-user-pill">
+          <span className="upload-user-avatar">
+            {userEmail ? userEmail[0]?.toUpperCase() : "U"}
+          </span>
+          <span className="upload-user-email">{userEmail || "Guest user"}</span>
+        </div>
+      </div>
 
       {/* Search bar */}
-      <form onSubmit={handleSearch} style={{ display: "flex", gap: 10 }}>
+      <form className="docs-search-bar" onSubmit={onSearchSubmit}>
         <input
-          className="search-box"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search documents..."
+          type="text"
+          placeholder="Search by file name or keyword..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="docs-search-input"
         />
-        <button className="retrieve-btn">Search</button>
+        <button type="submit" className="docs-search-button">
+          Search
+        </button>
+        {searchTerm && (
+          <button
+            type="button"
+            className="docs-clear-button"
+            onClick={clearSearch}
+          >
+            Clear
+          </button>
+        )}
       </form>
 
-      {/* File List */}
-      <div style={{ marginTop: 20 }}>
-        {filtered.length === 0 ? (
-          <div>No documents found</div>
+      {/* Documents list */}
+      <div className="docs-list-card">
+        {loadingDocs ? (
+          <div className="docs-loading">Loading your documents...</div>
+        ) : documents.length === 0 ? (
+          <div className="docs-empty">
+            No documents found. Try uploading some files first.
+          </div>
         ) : (
-          filtered.map((doc) => (
-            <div key={doc._id} className="result-card">
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <div>
-                  <strong>{doc.fileName}</strong>
-                  <div style={{ fontSize: 12, color: "#777" }}>
-                    Uploaded: {new Date(doc.createdAt).toLocaleString()}
-                  </div>
-                </div>
-
-                <button
-                  className="retrieve-btn"
-                  onClick={() => attemptDownload(doc)}
-                >
-                  Download
-                </button>
-              </div>
-            </div>
-          ))
+          <table className="docs-table">
+            <thead>
+              <tr>
+                <th>File Name</th>
+                <th>Size</th>
+                <th>Encrypted</th>
+                <th>Uploaded At</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {documents.map((doc) => (
+                <tr key={doc._id}>
+                  <td>{doc.fileName}</td>
+                  <td>{doc.size || "-"}</td>
+                  <td>{doc.encrypted ? "🔐 Yes" : "⚠ No"}</td>
+                  <td>
+                    {doc.uploadDate
+                      ? new Date(doc.uploadDate).toLocaleString()
+                      : "-"}
+                  </td>
+                  <td style={{ textAlign: "right" }}>
+                    <button
+                      className="docs-action-btn"
+                      onClick={() => handleDownload(doc)}
+                    >
+                      ⬇ Download
+                    </button>
+                    <button
+                      className="docs-action-btn"
+                      onClick={() => handleSummarize(doc)}
+                      disabled={summaryLoadingId === doc._id}
+                    >
+                      {summaryLoadingId === doc._id
+                        ? "Summarizing..."
+                        : "🧠 Summary"}
+                    </button>
+                    <button
+                      className="docs-action-btn"
+                      onClick={() => handleEmail(doc)}
+                      disabled={emailSendingId === doc._id}
+                    >
+                      {emailSendingId === doc._id
+                        ? "Emailing..."
+                        : "📧 Email"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
 
-      {/* OTP POPUP */}
-      {showPassword && (
-        <div className="password-modal">
-          <div className="password-box">
-            <h3>Enter OTP to Download</h3>
-
-            <input
-              type="text"
-              placeholder="Enter OTP"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value)}
-            />
-
-            <div className="modal-actions">
-              <button
-                className="modal-cancel"
-                onClick={() => setShowPassword(false)}
-              >
-                Cancel
-              </button>
-              <button className="modal-confirm" onClick={confirmDownload}>
-                Confirm
-              </button>
-            </div>
+      {/* Summary panel */}
+      {summaryDoc && (
+        <div className="docs-summary-panel">
+          <div className="docs-summary-header">
+            <h3>AI Summary</h3>
+            <button
+              className="docs-summary-close"
+              onClick={() => setSummaryDoc(null)}
+            >
+              ✕
+            </button>
           </div>
+          <div className="docs-summary-meta">
+            <strong>Document:</strong> {summaryDoc.name}
+          </div>
+          <pre className="docs-summary-text">{summaryDoc.summary}</pre>
         </div>
       )}
     </div>

@@ -1,7 +1,9 @@
 import React, { useRef, useState } from "react";
 
+const BACKEND_URL = "http://localhost:5000";
+
 export default function UploadPage({ userEmail }) {
-  const fileRef = useRef();
+  const fileRef = useRef(null);
   const [showPassword, setShowPassword] = useState(false);
   const [pendingFiles, setPendingFiles] = useState([]);
   const [passwordForUpload, setPasswordForUpload] = useState("");
@@ -18,16 +20,18 @@ export default function UploadPage({ userEmail }) {
     fileRef.current?.click();
   };
 
-  // UPLOAD TO BACKEND
+  // -----------------------------
+  // UPLOAD SINGLE FILE TO BACKEND
+  // -----------------------------
   const uploadToBackend = async (file) => {
     try {
       const formData = new FormData();
-      formData.append("pdf", file); // MUST MATCH BACKEND
-      formData.append("uploadPassword", passwordForUpload);
+      formData.append("pdf", file); // MUST MATCH BACKEND FIELD NAME
+      formData.append("uploadPassword", passwordForUpload); // used for AES encryption
 
       const token = localStorage.getItem("token");
 
-      const res = await fetch("http://localhost:5000/api/pdf/upload", {
+      const res = await fetch(`${BACKEND_URL}/api/pdf/upload`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -36,15 +40,25 @@ export default function UploadPage({ userEmail }) {
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message);
+      if (!res.ok) {
+        throw new Error(data.message || "Upload failed");
+      }
 
-      return data;
+      // backend: { message: 'Files uploaded', results: [ { doc, file } ] }
+      const uploadedDoc =
+        data.results && data.results[0] && data.results[0].doc;
+
+      return uploadedDoc || null;
     } catch (err) {
       console.error("UPLOAD ERROR:", err);
       alert("Upload failed: " + err.message);
+      return null;
     }
   };
 
+  // -----------------------------
+  // HANDLE FILES SELECTED
+  // -----------------------------
   const onFilesChosen = async (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -52,21 +66,25 @@ export default function UploadPage({ userEmail }) {
     setUploading(true);
 
     for (const f of files) {
-      const uploaded = await uploadToBackend(f);
+      const uploadedDoc = await uploadToBackend(f);
 
-      if (uploaded?.document) {
+      if (uploadedDoc) {
         const preview = {
-          id: Date.now() + Math.random(),
-          name: uploaded.document.fileName,
-          url: uploaded.document.path,
+          id: uploadedDoc._id || Date.now() + Math.random(),
+          name: uploadedDoc.fileName || f.name,
+          url: uploadedDoc.path || "",
           type: f.type,
+          summary: uploadedDoc.summary || "",
+          encrypted: uploadedDoc.encrypted,
         };
         setPendingFiles((prev) => [preview, ...prev]);
       }
     }
 
+    // reset
     setPasswordForUpload("");
     setUploading(false);
+    e.target.value = null;
   };
 
   const removePending = (id) => {
@@ -75,6 +93,23 @@ export default function UploadPage({ userEmail }) {
 
   return (
     <div className="documents-page">
+      {/* Header */}
+      <div className="upload-header">
+        <div>
+          <h2 className="upload-title">Secure Upload</h2>
+          <p className="upload-subtitle">
+            Upload PDFs and images. Files are secured with your password and stored in the cloud.
+          </p>
+        </div>
+        <div className="upload-user-pill">
+          <span className="upload-user-avatar">
+            {userEmail ? userEmail[0]?.toUpperCase() : "U"}
+          </span>
+          <span className="upload-user-email">{userEmail || "Guest user"}</span>
+        </div>
+      </div>
+
+      {/* Upload Box */}
       <div className="upload-box-wrapper">
         <button
           className="upload-btn-original"
@@ -98,29 +133,40 @@ export default function UploadPage({ userEmail }) {
         />
       </div>
 
+      {/* Recently Uploaded */}
       {pendingFiles.length > 0 && (
-        <div>
+        <div className="recent-uploads">
           <h3>Recently Uploaded</h3>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              marginTop: 8,
+            }}
+          >
             {pendingFiles.map((f) => (
               <div
                 key={f.id}
                 style={{
-                  width: 150,
+                  width: 190,
                   borderRadius: 12,
                   padding: 8,
                   background: "#fff",
                   boxShadow: "0 6px 16px rgba(0,0,0,0.06)",
                   position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
                 }}
               >
-                {f.type.startsWith("image/") ? (
+                {f.type?.startsWith("image/") ? (
                   <img
                     src={f.url}
                     alt={f.name}
                     style={{
                       width: "100%",
-                      height: 90,
+                      height: 100,
                       objectFit: "cover",
                       borderRadius: 8,
                     }}
@@ -128,11 +174,15 @@ export default function UploadPage({ userEmail }) {
                 ) : (
                   <div
                     style={{
-                      height: 90,
+                      height: 100,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       color: "#666",
+                      borderRadius: 8,
+                      background: "#f3f4f6",
+                      fontSize: 28,
+                      fontWeight: 600,
                     }}
                   >
                     PDF
@@ -142,7 +192,7 @@ export default function UploadPage({ userEmail }) {
                 <div
                   style={{
                     fontSize: 13,
-                    marginTop: 8,
+                    fontWeight: 500,
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -150,6 +200,27 @@ export default function UploadPage({ userEmail }) {
                 >
                   {f.name}
                 </div>
+
+                <div style={{ fontSize: 11, color: "#6b7280" }}>
+                  {f.encrypted ? "🔐 Encrypted" : "⚠ Not encrypted"}
+                </div>
+
+                {f.summary && (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#4b5563",
+                      background: "#f9fafb",
+                      borderRadius: 8,
+                      padding: 6,
+                      maxHeight: 60,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <strong>AI summary:</strong>{" "}
+                    <span>{f.summary.slice(0, 100)}...</span>
+                  </div>
+                )}
 
                 <button
                   onClick={() => removePending(f.id)}
@@ -160,8 +231,9 @@ export default function UploadPage({ userEmail }) {
                     background: "rgba(0,0,0,0.06)",
                     border: "none",
                     borderRadius: 8,
-                    padding: 6,
+                    padding: 4,
                     cursor: "pointer",
+                    fontSize: 12,
                   }}
                 >
                   ✕
@@ -172,6 +244,7 @@ export default function UploadPage({ userEmail }) {
         </div>
       )}
 
+      {/* Password Modal */}
       {showPassword && (
         <div className="password-modal">
           <div className="password-box">
@@ -183,7 +256,10 @@ export default function UploadPage({ userEmail }) {
               placeholder="Enter upload password"
             />
             <div className="modal-actions">
-              <button className="modal-cancel" onClick={() => setShowPassword(false)}>
+              <button
+                className="modal-cancel"
+                onClick={() => setShowPassword(false)}
+              >
                 Cancel
               </button>
               <button className="modal-confirm" onClick={handlePasswordConfirm}>
