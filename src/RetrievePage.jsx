@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import  EmailPasswordModal  from '../src/components/common/EmailPasswordModal'
 
 const BACKEND_URL = "http://localhost:5000";
 
@@ -14,7 +15,21 @@ export default function RetrievePage({ userEmail }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [summaryLoadingId, setSummaryLoadingId] = useState(null);
   const [summaryDoc, setSummaryDoc] = useState(null); // { id, name, summary }
+
   const [emailSendingId, setEmailSendingId] = useState(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [selectedDoc, setSelectedDoc] = useState(null);
+
+
+  const openModal = (doc) => {
+    setSelectedDoc(doc);
+    setModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setModalOpen(false);
+    setSelectedDoc(null);
+  };
 
   const token = localStorage.getItem("token");
 
@@ -187,35 +202,63 @@ const confirmDownload = async () => {
   // -----------------------------
   // EMAIL DOC
   // -----------------------------
-  const handleEmail = async (doc) => {
+// const handleEmail = async (doc) => {
+//   try {
+//     setEmailSendingId(doc._id);
+//     const res = await fetch(
+//       `${BACKEND_URL}/api/pdf/${doc._id}/email`,
+//       // `${BACKEND_URL}/api/test-email`,
+//       {
+//         method: "POST",
+//         headers: {
+//           Authorization: `Bearer ${token}`,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+
+//     const data = await res.json();
+//     if (!res.ok) {
+//       throw new Error(data.message || "Failed to send email");
+//     }
+
+//     alert(
+//       `Email sent for "${doc.fileName}" to your registered email address.`
+//     );
+//   } catch (err) {
+//     console.error("handleEmail error:", err);
+//     alert("Failed to email document: " + err.message);
+//   } finally {
+//     setEmailSendingId(null);
+//   }
+// };
+
+const sendEmail = async (password) => {
+    if (!selectedDoc) return;
+    setEmailSendingId(selectedDoc._id);
     try {
-      setEmailSendingId(doc._id);
-      const res = await fetch(
-        `${BACKEND_URL}/api/pdf/${doc._id}/email`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      const token = localStorage.getItem("token"); // your auth token
+      const res = await fetch(`${BACKEND_URL}/api/pdf/${selectedDoc._id}/email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ password }),
+      });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || "Failed to send email");
-      }
-
-      alert(
-        `Email sent for "${doc.fileName}" to your registered email address.`
-      );
+      if (!res.ok) throw new Error(data.message || "Failed to send email");
+      alert("Email sent successfully!");
+      closeModal();
     } catch (err) {
-      console.error("handleEmail error:", err);
-      alert("Failed to email document: " + err.message);
+      alert("Send failed: " + err.message);
+      console.error(err);
     } finally {
       setEmailSendingId(null);
     }
   };
+
 
   return (
 
@@ -258,6 +301,8 @@ const confirmDownload = async () => {
     </div>
   </div>
 )}
+
+
 
 
       {/* Header */}
@@ -347,7 +392,7 @@ const confirmDownload = async () => {
                     </button>
                     <button
                       className="docs-action-btn"
-                      onClick={() => handleEmail(doc)}
+                      onClick={() => openModal(doc)}
                       disabled={emailSendingId === doc._id}
                     >
                       {emailSendingId === doc._id
@@ -380,6 +425,13 @@ const confirmDownload = async () => {
           <pre className="docs-summary-text">{summaryDoc.summary}</pre>
         </div>
       )}
+
+      <EmailPasswordModal
+        open={modalOpen}
+        onClose={closeModal}
+        onConfirm={sendEmail}
+        fileName={selectedDoc?.fileName}
+      />
     </div>
   );
 }
